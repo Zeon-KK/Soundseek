@@ -8,7 +8,7 @@
  * Der AudD-Token liegt als Secret im Worker und verlässt ihn nie.
  */
 
-const WORKER_VERSION = 4;
+const WORKER_VERSION = 5;
 
 const AUDD_ENDPOINT = 'https://api.audd.io/';
 const TIKWM_ENDPOINT = 'https://www.tikwm.com/api/';
@@ -42,6 +42,9 @@ export default {
       }
       if (url.pathname === '/api/download' && request.method === 'GET') {
         return await handleDownload(url, cors);
+      }
+      if (url.pathname === '/api/debug' && request.method === 'GET') {
+        return await handleDebug(url, cors);
       }
       if (url.pathname === '/api/health') {
         return json(
@@ -120,7 +123,13 @@ async function handleIdentify(request, env, cors) {
   const recognition = await recognize(candidates, env);
 
   if (!recognition.ok) {
-    return json({ ...recognition, media, source: resolved }, recognition.status || 502, cors);
+    // "tried" sagt bei der Fehlersuche, woran es lag: an der Tonspur oder
+    // daran, dass sich gar keine holen liess.
+    return json(
+      { ...recognition, media, source: resolved, tried: candidates },
+      recognition.status || 502,
+      cors,
+    );
   }
 
   return json({ ok: true, song: recognition.song, media, source: resolved }, 200, cors);
@@ -282,6 +291,53 @@ function shapeSong(r) {
       (deezer && deezer.preview) ||
       null,
   };
+}
+
+/* ------------------------------------------------------------------- debug */
+
+/**
+ * Zeigt, was sich aus einem Beitrag herausholen laesst, ohne den
+ * Erkennungsdienst anzufassen — kostet also nichts vom Kontingent.
+ * Gedacht fuer die Fehlersuche, wenn eine Erkennung scheitert.
+ */
+async function handleDebug(url, cors) {
+  const tiktokUrl = normalizeTikTokUrl(url.searchParams.get('url'));
+  if (!tiktokUrl) {
+    return json(
+      { ok: false, error: 'invalid_url', message: 'Das sieht nicht nach einem TikTok-Link aus.' },
+      400,
+      cors,
+    );
+  }
+
+  const resolved = await resolveShortLink(tiktokUrl);
+
+  let media = null;
+  let mediaError = null;
+  try {
+    media = await fetchMedia(resolved);
+  } catch (err) {
+    mediaError = String((err && err.message) || err);
+  }
+
+  const fromMedia = [media && media.soundUrl, media && media.videoUrl].filter(Boolean);
+
+  return json(
+    {
+      ok: true,
+      version: WORKER_VERSION,
+      input: tiktokUrl,
+      resolved,
+      shortLinkResolved: resolved !== tiktokUrl,
+      mediaFound: Boolean(media),
+      mediaError,
+      media,
+      // Genau diese Quellen wuerde die Erkennung der Reihe nach probieren.
+      wouldTry: fromMedia.length ? fromMedia : [resolved],
+    },
+    200,
+    cors,
+  );
 }
 
 /* ------------------------------------------------------------------- media */

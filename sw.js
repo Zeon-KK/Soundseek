@@ -1,8 +1,14 @@
 /**
- * Service Worker: haelt nur die Huelle der App offline vor.
- * Erkennungs-Anfragen gehen immer ins Netz — die duerfen nie aus dem Cache kommen.
+ * Service Worker: haelt die Huelle der App offline vor.
+ *
+ * Bewusst "Netz zuerst, Cache als Rueckfall": bei Cache-zuerst behielten
+ * Besucher nach einem Update die alte Fassung, weil der Cache nie ablief.
+ * Der Cache ist hier fuers Offline-Sein da, nicht fuers Tempo.
+ *
+ * CACHE bei jeder Aenderung an der Huelle hochzaehlen — der alte wird beim
+ * Aktivieren geloescht.
  */
-const CACHE = 'soundseek-v1';
+const CACHE = 'soundseek-v2';
 const SHELL = [
   './',
   'index.html',
@@ -15,7 +21,10 @@ const SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()),
+    caches
+      .open(CACHE)
+      .then((cache) => cache.addAll(SHELL))
+      .then(() => self.skipWaiting()),
   );
 });
 
@@ -37,18 +46,14 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.includes('/api/')) return;
 
   event.respondWith(
-    caches.match(request).then(
-      (hit) =>
-        hit ||
-        fetch(request)
-          .then((response) => {
-            if (response.ok && response.type === 'basic') {
-              const copy = response.clone();
-              caches.open(CACHE).then((cache) => cache.put(request, copy));
-            }
-            return response;
-          })
-          .catch(() => caches.match('index.html')),
-    ),
+    fetch(request)
+      .then((response) => {
+        if (response.ok && response.type === 'basic') {
+          const copy = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request).then((hit) => hit || caches.match('index.html'))),
   );
 });
