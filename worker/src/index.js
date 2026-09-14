@@ -8,6 +8,8 @@
  * Der AudD-Token liegt als Secret im Worker und verlässt ihn nie.
  */
 
+const WORKER_VERSION = 4;
+
 const AUDD_ENDPOINT = 'https://api.audd.io/';
 const TIKWM_ENDPOINT = 'https://www.tikwm.com/api/';
 
@@ -42,7 +44,18 @@ export default {
         return await handleDownload(url, cors);
       }
       if (url.pathname === '/api/health') {
-        return json({ ok: true, configured: Boolean(env.AUDD_API_TOKEN) }, 200, cors);
+        return json(
+          {
+            ok: true,
+            configured: Boolean(env.AUDD_API_TOKEN),
+            // Hochzaehlen, wenn sich am Worker etwas aendert: so ist von aussen
+            // sichtbar, ob ein Deploy wirklich angekommen ist.
+            version: WORKER_VERSION,
+            allowedOrigins: env.ALLOWED_ORIGINS || '*',
+          },
+          200,
+          cors,
+        );
       }
     } catch (err) {
       return json(
