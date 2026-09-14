@@ -9,5 +9,5 @@
  * (Zahnrad oben rechts) — das wird dann im Browser gespeichert.
  */
 window.SOUNDSEEK_CONFIG = {
-  apiBase: '',
+  apiBase: 'https://soundseek-api.12ksnf21.workers.dev',
 };

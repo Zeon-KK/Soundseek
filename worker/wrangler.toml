@@ -7,7 +7,7 @@ compatibility_date = "2025-09-01"
 #   ALLOWED_ORIGINS = "https://deinname.github.io"
 # Mehrere durch Komma trennen. "*" erlaubt jeden.
 [vars]
-ALLOWED_ORIGINS = "*"
+ALLOWED_ORIGINS = "https://zeon-kk.github.io"
 AUDD_MARKET = "de"
 
 # AUDD_API_TOKEN wird NICHT hier eingetragen, sondern als Secret:
