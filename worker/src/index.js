@@ -8,7 +8,7 @@
  * Der AudD-Token liegt als Secret im Worker und verlässt ihn nie.
  */
 
-const WORKER_VERSION = 6;
+const WORKER_VERSION = 7;
 
 const AUDD_ENDPOINT = 'https://api.audd.io/';
 const TIKWM_ENDPOINT = 'https://www.tikwm.com/api/';
@@ -25,6 +25,9 @@ const TIKTOK_CDN_HOSTS = [
   /(^|\.)muscdn\.com$/,
   /(^|\.)byteoversea\.com$/,
   /(^|\.)ibytedtos\.com$/,
+  // Videodateien liegen auf Knoten wie v16-webapp-prime.tiktok.com. Bewusst eng
+  // gefasst, damit hier nicht jede beliebige tiktok.com-Adresse durchrutscht.
+  /^v\d+[\w-]*\.tiktok\.com$/,
 ];
 
 // Hosts, von denen der Download-Proxy ausliefern darf. Ohne diese Liste wäre
