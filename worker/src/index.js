@@ -98,7 +98,12 @@ async function handleIdentify(request, env, cors) {
   // Sound-Download aus dem Beitrag ist genau das.
   const media = await fetchMedia(resolved).catch(() => null);
 
-  const candidates = [media && media.soundUrl, media && media.videoUrl, resolved].filter(Boolean);
+  // Jeder Versuch kostet eine Anfrage beim Erkennungsdienst, also so wenige wie
+  // moeglich: mit echter Audiospur reicht diese (plus Video als Reserve). Die
+  // Seite selbst ist nur dran, wenn sich gar keine Medien holen liessen — an ihr
+  // scheitert AudD ohnehin meistens.
+  const fromMedia = [media && media.soundUrl, media && media.videoUrl].filter(Boolean);
+  const candidates = fromMedia.length ? fromMedia : [resolved];
   const recognition = await recognize(candidates, env);
 
   if (!recognition.ok) {
