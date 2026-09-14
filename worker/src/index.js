@@ -91,23 +91,81 @@ async function handleIdentify(request, env, cors) {
     );
   }
 
-  // Beides parallel: AudD erkennt den Song, tikwm liefert Cover, Video und Sound.
-  const [recognition, media] = await Promise.all([
-    recognize(tiktokUrl, env),
-    fetchMedia(tiktokUrl).catch(() => null),
-  ]);
+  // Kurzlinks (vm.tiktok.com) sind nur Weiterleitungen — erst aufloesen.
+  const resolved = await resolveShortLink(tiktokUrl);
+
+  // Medien zuerst: AudD will eine echte Audiodatei, keine Webseite. Der
+  // Sound-Download aus dem Beitrag ist genau das.
+  const media = await fetchMedia(resolved).catch(() => null);
+
+  const candidates = [media && media.soundUrl, media && media.videoUrl, resolved].filter(Boolean);
+  const recognition = await recognize(candidates, env);
 
   if (!recognition.ok) {
-    return json({ ...recognition, media }, recognition.status || 502, cors);
+    return json({ ...recognition, media, source: resolved }, recognition.status || 502, cors);
   }
 
-  return json({ ok: true, song: recognition.song, media, source: tiktokUrl }, 200, cors);
+  return json({ ok: true, song: recognition.song, media, source: resolved }, 200, cors);
 }
 
-async function recognize(tiktokUrl, env) {
+/**
+ * Folgt der Weiterleitung hinter einem Kurzlink. Schlaegt das fehl, bleibt der
+ * urspruengliche Link stehen — tikwm kommt mit beidem klar.
+ */
+async function resolveShortLink(tiktokUrl) {
+  if (!/^https:\/\/(vm|vt|m)\.tiktok\.com\//i.test(tiktokUrl)) return tiktokUrl;
+
+  try {
+    const res = await fetch(tiktokUrl, {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: { 'user-agent': 'Mozilla/5.0 (compatible; SoundSeek/1.0)' },
+    });
+    if (res.url && /tiktok\.com/.test(res.url)) {
+      const clean = new URL(res.url);
+      clean.search = '';
+      clean.hash = '';
+      return clean.toString();
+    }
+  } catch {
+    /* Weiterleitung nicht erreichbar — dann eben mit dem Kurzlink weiter. */
+  }
+  return tiktokUrl;
+}
+
+/**
+ * Probiert der Reihe nach mehrere Quellen: erst die reine Audiodatei, dann das
+ * Video, zuletzt die Seite selbst. Die erste, die einen Treffer liefert, gewinnt.
+ */
+async function recognize(candidates, env) {
+  let noMatch = null;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    const outcome = await recognizeOne(candidate, env);
+    if (outcome.ok) return outcome;
+    // Token abgelehnt oder Kontingent leer — weitere Versuche bringen nichts.
+    if (outcome.fatal) return outcome;
+    if (outcome.error === 'no_match') noMatch = noMatch || outcome;
+    lastError = outcome;
+  }
+
+  // "Kein Treffer" ist die aussagekraeftigere Antwort als ein technischer Fehler.
+  return (
+    noMatch ||
+    lastError || {
+      ok: false,
+      error: 'no_source',
+      message: 'Aus diesem Beitrag liess sich keine Audiospur holen.',
+      status: 502,
+    }
+  );
+}
+
+async function recognizeOne(sourceUrl, env) {
   const params = new URLSearchParams({
     api_token: env.AUDD_API_TOKEN,
-    url: tiktokUrl,
+    url: sourceUrl,
     return: 'apple_music,spotify,deezer',
     market: env.AUDD_MARKET || 'de',
   });
@@ -132,14 +190,25 @@ async function recognize(tiktokUrl, env) {
 
   if (data.status === 'error') {
     const code = data.error && data.error.error_code;
-    // 900 = Token wird nicht akzeptiert, 901 = Kontingent aufgebraucht
+    // 900 = Token wird nicht akzeptiert, 901 = Kontingent aufgebraucht.
+    // Beides betrifft das Konto, nicht die Quelle — weiterprobieren ist sinnlos.
+    const fatal = code === 900 || code === 901;
     const message =
       code === 901
         ? 'Das AudD-Kontingent ist aufgebraucht.'
         : code === 900
           ? 'Der AudD-Token wird nicht akzeptiert.'
-          : (data.error && data.error.error_message) || 'AudD meldet einen Fehler.';
-    return { ok: false, error: 'audd_error', code, message, status: 502 };
+          : 'Aus diesem Beitrag liess sich kein Fingerabdruck der Musik erzeugen.';
+
+    return {
+      ok: false,
+      error: 'audd_error',
+      code,
+      fatal,
+      message,
+      detail: (data.error && data.error.error_message) || null,
+      status: 502,
+    };
   }
 
   if (!data.result) {

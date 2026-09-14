@@ -41,9 +41,18 @@ function refreshApiHint() {
 
 /* ------------------------------------------------------------------ Status */
 
-function setStatus(message, isError = false) {
+function setStatus(message, isError = false, detail = null) {
   statusEl.textContent = message;
   statusEl.classList.toggle('is-error', isError);
+
+  // Die Originalmeldung des Erkennungsdienstes ist beim Debuggen Gold wert,
+  // soll aber nicht die halbe Seite fuellen.
+  if (detail) {
+    const small = document.createElement('span');
+    small.className = 'status-detail';
+    small.textContent = detail;
+    statusEl.append(small);
+  }
 }
 
 function setBusy(busy) {
@@ -175,7 +184,7 @@ async function identify(rawUrl) {
     }
 
     if (!data.ok) {
-      setStatus(data.message || 'Das hat nicht geklappt.', true);
+      setStatus(data.message || 'Das hat nicht geklappt.', true, data.detail);
       return;
     }
 

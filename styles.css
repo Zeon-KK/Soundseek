@@ -254,6 +254,14 @@ main {
   color: var(--danger);
 }
 
+.status-detail {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
 /* ------------------------------------------------------------------ result */
 
 .result {
