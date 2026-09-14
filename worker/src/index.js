@@ -8,22 +8,31 @@
  * Der AudD-Token liegt als Secret im Worker und verlässt ihn nie.
  */
 
-const WORKER_VERSION = 5;
+const WORKER_VERSION = 6;
 
 const AUDD_ENDPOINT = 'https://api.audd.io/';
 const TIKWM_ENDPOINT = 'https://www.tikwm.com/api/';
 
-// Hosts, von denen der Download-Proxy ausliefern darf. Ohne diese Liste wäre
-// der Worker ein offener Proxy, über den jeder beliebige Dateien saugen kann.
-const ALLOWED_MEDIA_HOSTS = [
+// TikToks eigene CDN-Hosts. Sie geben Dateien nur mit passendem Referer heraus,
+// deshalb muss der Worker sie durchreichen statt sie direkt zu verlinken.
+const TIKTOK_CDN_HOSTS = [
   /(^|\.)tiktokcdn\.com$/,
   /(^|\.)tiktokcdn-us\.com$/,
   /(^|\.)tiktokcdn-eu\.com$/,
+  /(^|\.)tiktokcdn-in\.com$/,
   /(^|\.)tiktokv\.com$/,
   /(^|\.)tiktokvcdn\.com$/,
   /(^|\.)muscdn\.com$/,
-  /(^|\.)tikwm\.com$/,
+  /(^|\.)byteoversea\.com$/,
+  /(^|\.)ibytedtos\.com$/,
 ];
+
+// Hosts, von denen der Download-Proxy ausliefern darf. Ohne diese Liste wäre
+// der Worker ein offener Proxy, über den jeder beliebige Dateien saugen kann.
+const ALLOWED_MEDIA_HOSTS = [...TIKTOK_CDN_HOSTS, /(^|\.)tikwm\.com$/];
+
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 const TIKTOK_HOSTS = [/(^|\.)tiktok\.com$/];
 
@@ -111,22 +120,26 @@ async function handleIdentify(request, env, cors) {
   const resolved = await resolveShortLink(tiktokUrl);
 
   // Medien zuerst: AudD will eine echte Audiodatei, keine Webseite. Der
-  // Sound-Download aus dem Beitrag ist genau das.
-  const media = await fetchMedia(resolved).catch(() => null);
+  // Sound aus dem Beitrag ist genau das.
+  const { media, attempts } = await collectMedia(resolved);
 
   // Jeder Versuch kostet eine Anfrage beim Erkennungsdienst, also so wenige wie
   // moeglich: mit echter Audiospur reicht diese (plus Video als Reserve). Die
   // Seite selbst ist nur dran, wenn sich gar keine Medien holen liessen — an ihr
   // scheitert AudD ohnehin meistens.
-  const fromMedia = [media && media.soundUrl, media && media.videoUrl].filter(Boolean);
+  const origin = new URL(request.url).origin;
+  const fromMedia = [
+    media && media.soundUrl && throughProxy(origin, media.soundUrl, 'sound'),
+    media && media.videoUrl && throughProxy(origin, media.videoUrl, 'video'),
+  ].filter(Boolean);
   const candidates = fromMedia.length ? fromMedia : [resolved];
   const recognition = await recognize(candidates, env);
 
   if (!recognition.ok) {
-    // "tried" sagt bei der Fehlersuche, woran es lag: an der Tonspur oder
-    // daran, dass sich gar keine holen liess.
+    // "tried" und "attempts" sagen bei der Fehlersuche, woran es lag: an der
+    // Tonspur selbst oder daran, dass sich gar keine holen liess.
     return json(
-      { ...recognition, media, source: resolved, tried: candidates },
+      { ...recognition, media, source: resolved, tried: candidates, attempts },
       recognition.status || 502,
       cors,
     );
@@ -311,16 +324,13 @@ async function handleDebug(url, cors) {
   }
 
   const resolved = await resolveShortLink(tiktokUrl);
+  const { media, attempts } = await collectMedia(resolved);
 
-  let media = null;
-  let mediaError = null;
-  try {
-    media = await fetchMedia(resolved);
-  } catch (err) {
-    mediaError = String((err && err.message) || err);
-  }
-
-  const fromMedia = [media && media.soundUrl, media && media.videoUrl].filter(Boolean);
+  const origin = url.origin;
+  const fromMedia = [
+    media && media.soundUrl && throughProxy(origin, media.soundUrl, 'sound'),
+    media && media.videoUrl && throughProxy(origin, media.videoUrl, 'video'),
+  ].filter(Boolean);
 
   return json(
     {
@@ -330,7 +340,8 @@ async function handleDebug(url, cors) {
       resolved,
       shortLinkResolved: resolved !== tiktokUrl,
       mediaFound: Boolean(media),
-      mediaError,
+      // Pro Quelle: hat sie geliefert, und wenn nicht, warum nicht.
+      attempts,
       media,
       // Genau diese Quellen wuerde die Erkennung der Reihe nach probieren.
       wouldTry: fromMedia.length ? fromMedia : [resolved],
@@ -342,26 +353,112 @@ async function handleDebug(url, cors) {
 
 /* ------------------------------------------------------------------- media */
 
-async function fetchMedia(tiktokUrl) {
-  const res = await fetch(`${TIKWM_ENDPOINT}?url=${encodeURIComponent(tiktokUrl)}&hd=1`, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; SoundSeek/1.0)' },
-  });
-  if (!res.ok) return null;
+/**
+ * Holt Tonspur und Video eines Beitrags. Zuerst bei TikTok selbst, dann ueber
+ * tikwm — faellt eine Quelle aus, uebernimmt die andere. "attempts" haelt fest,
+ * woran es lag, damit /api/debug etwas Brauchbares zeigen kann.
+ */
+async function collectMedia(pageUrl) {
+  const attempts = [];
 
-  const data = await res.json();
-  if (!data || data.code !== 0 || !data.data) return null;
+  for (const source of [mediaFromTikTokPage, mediaFromTikwm]) {
+    let outcome;
+    try {
+      outcome = await source(pageUrl);
+    } catch (err) {
+      attempts.push({ source: source.sourceName, note: String((err && err.message) || err) });
+      continue;
+    }
+
+    const media = outcome && outcome.media;
+    if (media && (media.soundUrl || media.videoUrl)) {
+      attempts.push({ source: source.sourceName, note: 'ok' });
+      return { media: { ...media, via: source.sourceName }, attempts };
+    }
+    attempts.push({ source: source.sourceName, note: (outcome && outcome.note) || 'nichts gefunden' });
+  }
+
+  return { media: null, attempts };
+}
+
+/** Liest die Daten, die TikTok selbst in die Seite einbettet. */
+async function mediaFromTikTokPage(pageUrl) {
+  const res = await fetch(pageUrl, {
+    headers: {
+      'user-agent': BROWSER_UA,
+      accept: 'text/html,application/xhtml+xml',
+      'accept-language': 'de-DE,de;q=0.9,en;q=0.8',
+    },
+  });
+  if (!res.ok) return { note: `HTTP ${res.status}` };
+
+  const html = await res.text();
+  const match = html.match(
+    /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/,
+  );
+  if (!match) return { note: 'Seite ohne eingebettete Daten — TikTok hat vermutlich abgewiesen' };
+
+  let data;
+  try {
+    data = JSON.parse(match[1]);
+  } catch {
+    return { note: 'eingebettete Daten unlesbar' };
+  }
+
+  const scope = data && data.__DEFAULT_SCOPE__;
+  const detail = scope && scope['webapp.video-detail'];
+  const item = detail && detail.itemInfo && detail.itemInfo.itemStruct;
+  if (!item) return { note: 'Beitragsdaten fehlen (geloescht, privat oder Altersbeschraenkung?)' };
+
+  const music = item.music || {};
+  const video = item.video || {};
+  const author = item.author || {};
+
+  return {
+    media: {
+      cover: video.cover || video.originCover || null,
+      caption: item.desc || null,
+      author: author.nickname || author.uniqueId || null,
+      duration: video.duration || null,
+      soundTitle: music.title || null,
+      soundUrl: music.playUrl || null,
+      videoUrl: video.playAddr || video.downloadAddr || null,
+    },
+  };
+}
+mediaFromTikTokPage.sourceName = 'tiktok';
+
+/** Rueckfall ueber einen fremden Dienst, falls TikTok direkt dichtmacht. */
+async function mediaFromTikwm(pageUrl) {
+  const res = await fetch(`${TIKWM_ENDPOINT}?url=${encodeURIComponent(pageUrl)}&hd=1`, {
+    headers: { 'user-agent': BROWSER_UA },
+  });
+  if (!res.ok) return { note: `HTTP ${res.status}` };
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    return { note: 'Antwort war kein JSON' };
+  }
+  if (!data || data.code !== 0 || !data.data) {
+    return { note: `abgelehnt (code ${data && data.code}${data && data.msg ? `: ${data.msg}` : ''})` };
+  }
 
   const d = data.data;
   return {
-    cover: d.cover || d.origin_cover || null,
-    caption: d.title || null,
-    author: d.author ? d.author.nickname || d.author.unique_id || null : null,
-    duration: d.duration || null,
-    soundTitle: d.music_info ? d.music_info.title || null : null,
-    soundUrl: absolutize(d.music || (d.music_info && d.music_info.play)),
-    videoUrl: absolutize(d.hdplay || d.play),
+    media: {
+      cover: d.cover || d.origin_cover || null,
+      caption: d.title || null,
+      author: d.author ? d.author.nickname || d.author.unique_id || null : null,
+      duration: d.duration || null,
+      soundTitle: d.music_info ? d.music_info.title || null : null,
+      soundUrl: absolutize(d.music || (d.music_info && d.music_info.play)),
+      videoUrl: absolutize(d.hdplay || d.play),
+    },
   };
 }
+mediaFromTikwm.sourceName = 'tikwm';
 
 function absolutize(u) {
   if (!u) return null;
@@ -369,6 +466,22 @@ function absolutize(u) {
   if (u.startsWith('http://')) return `https://${u.slice(7)}`;
   if (u.startsWith('/')) return `https://www.tikwm.com${u}`;
   return null;
+}
+
+/**
+ * TikToks CDN gibt Dateien nur mit passendem Referer heraus — ein fremder
+ * Abruf bekaeme 403. Solche Adressen reicht der Worker deshalb selbst durch,
+ * statt sie direkt weiterzugeben.
+ */
+function throughProxy(origin, mediaUrl, name = 'audio') {
+  let host;
+  try {
+    host = new URL(mediaUrl).hostname;
+  } catch {
+    return mediaUrl;
+  }
+  if (!TIKTOK_CDN_HOSTS.some((re) => re.test(host))) return mediaUrl;
+  return `${origin}/api/download?u=${encodeURIComponent(mediaUrl)}&name=${encodeURIComponent(name)}`;
 }
 
 /* ---------------------------------------------------------------- download */
