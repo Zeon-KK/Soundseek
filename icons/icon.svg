@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SoundSeek">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7c5cff" />
+      <stop offset="55%" stop-color="#6a4bff" />
+      <stop offset="100%" stop-color="#26d9c4" />
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+
+  <!-- Suchring mit Equalizer-Balken darin -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round">
+    <circle cx="222" cy="222" r="118" stroke-width="30" />
+    <path d="M318 318 L404 404" stroke-width="38" />
+    <g stroke-width="22">
+      <path d="M166 190 V254" />
+      <path d="M206 156 V288" />
+      <path d="M246 178 V266" />
+      <path d="M286 202 V242" />
+    </g>
+  </g>
+</svg>

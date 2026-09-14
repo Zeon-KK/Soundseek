@@ -1,0 +1,14 @@
+{
+  "name": "soundseek-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker backend for SoundSeek",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "secret": "wrangler secret put AUDD_API_TOKEN"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
